@@ -1,0 +1,146 @@
+blueprint:
+  name: Room airing done reminder
+  description: Reminds you to close the window once airing a room is considered done
+  source_url: https://github.com/icex2/home-assistant-utils
+  domain: automation
+  author: icex2
+  input:
+    target_min_humidity:
+      name: Desired target minimum humidity
+      description: Consider airing the room complete when the humidity drops to this value or below
+      default: 60
+      selector:
+        number:
+          min: 0
+          max: 100
+          unit_of_measurement: "%"
+    target_min_temperature:
+      name: Minimum temperature
+      description: Even humidity does not go below the desired threshold, minimum temperature threshold to not cool down the room too much, e.g. when it's also super humid outside
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 50
+          unit_of_measurement: "°C"
+    target_min_time:
+      name: Minimum time to keep the window open
+      description: Minimum amount of time to keep the window open ignoring target temperature, humidity and time thresholds
+      default: 0
+      selector:
+        number:
+          min: 0
+          max: 240
+          unit_of_measurement: minutes
+    target_max_time:
+      name: Maximum time to keep the window open
+      description: Threshold to consider airing when even when temperature and humidity thresholds are not reached
+      default: 15
+      selector:
+        number:
+          min: 0
+          max: 240
+          unit_of_measurement: minutes
+    reminder_repaet_delay:
+      name: Delay between reminders
+      description: When window isn't closed, yet, keep reminding to close it
+      default: 5
+      selector:
+        number:
+          min: 1
+          max: 60
+          unit_of_measurement: minutes
+    target_notify_service:
+      name: Target notify Service
+      description: The notify service that will be called to deliver the notification. For example, individual phone or a group (notify.notification_group_room_airing)
+      selector:
+        text:
+    window_entity:
+      name: Target window for airing the room
+      description: The target window or group of windows relevant to airing the room
+      selector:
+        entity:
+          device_class: window
+    temperature_entity:
+      name: Temperature sensor of the room
+      description: The temperature sensor of the room to use for tracking the defined threshold
+      selector:
+        entity:
+          device_class: temperature
+    humidity_entity:
+      name: Humidity sensor of the room
+      description: The humidity sensor of the room to use for tracking the defined threshold
+      selector:
+        entity:
+          device_class: humidity
+    friendly_name:
+      name: Friendly name for the target window to close
+      description: For example, "Bathroom - Groundfloor"
+      selector:
+        text:
+
+mode: restart
+max_exceeded: silent
+
+variables:
+  friendly_name: !input friendly_name
+  humidity_entity: !input humidity_entity
+  temperature_entity: !input temperature_entity
+  target_min_temperature: !input target_min_temperature
+  target_min_humidity: !input target_min_humidity
+  target_max_time: !input target_max_time
+  target_min_time: !input target_min_time
+
+trigger:
+  - platform: state
+    entity_id: !input window_entity
+    from: "off"
+    to: "on"
+
+action:
+  - delay:
+      hours: 0
+      minutes: !input target_min_time
+      seconds: 0
+      milliseconds: 0
+  - wait_for_trigger:
+      - platform: template
+        value_template: >-
+          {{
+            states('sensor.humidity_entity') | float(0) <= target_min_humidity or 
+            states('sensor.temperature_entity') | float(0) <= target_min_temperature
+          }}
+    timeout:
+      hours: 0
+      minutes: "{{ int(target_max_time - target_min_time) | int(0) }}"
+      seconds: 0
+      milliseconds: 0
+  - repeat:
+      sequence:
+        - if:
+            - condition: state
+              entity_id: !input window_entity
+              state: "on"
+          then:
+            - service: !input target_notify_service
+              data:
+                title: "Airing: {{ friendly_name }}"
+                message: Done, close the window
+            - wait_for_trigger:
+                - platform: state
+                  entity_id: !input window_entity
+                  from: "on"
+                  to: "off"
+              timeout:
+                hours: 0
+                minutes: !input reminder_repaet_delay
+                seconds: 0
+                milliseconds: 0
+      until:
+        - condition: state
+          entity_id: !input window_entity
+          state: "off"
+  - service: !input target_notify_service
+    data:
+      title: "Airing: {{ friendly_name }}"
+      message: Window closed
