@@ -1,0 +1,247 @@
+blueprint:
+  name: Advanced motion-activated light with switch overrides
+  description: >-
+    Turn on a light when motion is detected, but consider (light) switch overrides forcing the light to stay on or off.
+    A more complex motion detection automation that "works around" the problem
+    that most (or even all?) light switches/relays do not provide separate switch
+    inputs.
+    When motion is detected, the light is turned on; when motion is cleared,
+    it is turned off.
+    Turning the lights on using the (physical) light switch disables motion
+    detection until the light is turned off again. An additional boolean variable
+    allows disabling motion triggers permanently, e.g. to keep the lights off even
+    when motion is detected.
+  domain: automation
+  source_url: https://github.com/home-assistant/core/blob/dev/homeassistant/components/automation/blueprints/motion_light.yaml
+  author: icex2
+  input:
+    motion_entity:
+      name: Motion Sensor
+      description: The motion sensor or group to control light on/off behavior
+      selector:
+        entity:
+          domain: binary_sensor
+          device_class: motion
+    light_entity:
+      name: Light entity
+      description: The light entity or group to control
+      selector:
+        entity:
+          domain: light
+    no_motion_wait_sec:
+      name: Wait time
+      description: Time to leave the light on after no motion is detected anymore.
+      default: 10
+      selector:
+        number:
+          min: 0
+          max: 3600
+          unit_of_measurement: seconds
+    input_boolean_physical_switch_override:
+      name: "Physical switch override"
+      description: A helper/state variable (input_boolean) that is required to persist the state of whether the (physical) light switch was pressed to disable/override motion control.
+      selector:
+        entity:
+          domain: input_boolean
+    input_boolean_disable_motion_sensors:
+      name: "Allow user to disable motion sensors"
+      description: A helper/state variable (input_boolean) that is required to persist state. The user can use this to disable motion sensor control entirely, e.g. to keep the lights off even when motion is detected.
+      selector:
+        entity:
+          domain: input_boolean
+    timer_motion_detected_light_timeout:
+      name: "Keep track of light timeout after motion detection"
+      description: A timer helper to keep track of no motion detected timeout to allow for switching off the lights delayed
+      selector:
+        entity:
+          domain: timer
+
+mode: restart
+
+trigger:
+  - platform: state
+    entity_id: !input motion_entity
+    from: "off"
+    to: "on"
+    id: motion_detected
+    alias: Motion detected
+  - platform: state
+    entity_id: !input light_entity
+    from: "off"
+    to: "on"
+    id: light_switch_on
+    alias: Light (switch) on
+  - alias: Light (switch) off
+    platform: state
+    entity_id: !input light_entity
+    from: "on"
+    to: "off"
+    id: light_switch_off
+  - platform: event
+    event_type: timer.finished
+    event_data:
+      entity_id: !input timer_motion_detected_light_timeout
+    context: {}
+    id: motion_clear_timer_finish
+    alias: Light timer finished
+  - platform: state
+    entity_id: !input motion_entity
+    to: "off"
+    id: motion_clear
+    from: "on"
+    alias: No motion detected anymore
+
+condition: []
+
+variables:
+  automation_id: "{{ this.entity_id }}"
+
+action:
+  - alias: "Path: Motion detected"
+    if:
+      - condition: trigger
+        id:
+          - motion_detected
+      - condition: state
+        entity_id: !input input_boolean_physical_switch_override
+        state: "off"
+      - condition: state
+        entity_id: !input input_boolean_disable_motion_sensors
+        state: "off"
+    then:
+      - service: timer.pause
+        target:
+          entity_id: !input timer_motion_detected_light_timeout
+          device_id: []
+          area_id: []
+        data: {}
+      - alias: >-
+          Disable this automation to avoid re-triggering and aborting it when
+          turning on the light next
+        service: automation.turn_off
+        data:
+          stop_actions: false
+        target:
+          entity_id: "{{ automation_id }}"
+      - service: light.turn_on
+        data: {}
+        target:
+          entity_id: !input light_entity
+      - service: automation.turn_on
+        data: {}
+        target:
+          entity_id: "{{ automation_id }}"
+  - alias: "Path: Light on"
+    if:
+      - condition: trigger
+        id:
+          - light_switch_on
+    then:
+      - service: timer.pause
+        target:
+          entity_id: !input timer_motion_detected_light_timeout
+          device_id: []
+          area_id: []
+        data: {}
+      - service: input_boolean.turn_on
+        target:
+          entity_id: !input input_boolean_physical_switch_override
+        data: {}
+      - alias: >-
+          Disable this automation to avoid re-triggering and aborting it when
+          turning on the light next
+        service: automation.turn_off
+        data:
+          stop_actions: false
+        target:
+          entity_id: "{{ automation_id }}"
+      - service: light.turn_on
+        data: {}
+        target:
+          entity_id: !input light_entity
+      - service: automation.turn_on
+        data: {}
+        target:
+          entity_id: "{{ automation_id }}"
+  - alias: "Path: Light off"
+    if:
+      - condition: trigger
+        id:
+          - light_switch_off
+    then:
+      - service: timer.pause
+        target:
+          entity_id: !input timer_motion_detected_light_timeout
+          device_id: []
+          area_id: []
+        data: {}
+      - service: input_boolean.turn_off
+        target:
+          entity_id: !input input_boolean_physical_switch_override
+          device_id: []
+          area_id: []
+        data: {}
+      - alias: >-
+          Disable this automation to avoid re-triggering and aborting it when
+          turning on the light next
+        service: automation.turn_off
+        data:
+          stop_actions: false
+        target:
+          entity_id: "{{ automation_id }}"
+      - service: light.turn_off
+        target:
+          entity_id: !input light_entity
+        data: {}
+      - service: automation.turn_on
+        data: {}
+        target:
+          entity_id: "{{ automation_id }}"
+  - if:
+      - condition: trigger
+        id:
+          - motion_clear
+      - condition: state
+        entity_id: !input input_boolean_disable_motion_sensors
+        state: "off"
+      - condition: state
+        entity_id: !input input_boolean_physical_switch_override
+        state: "off"
+    then:
+      - service: timer.start
+        target:
+          entity_id: !input timer_motion_detected_light_timeout
+        data:
+          duration: !input no_motion_wait_sec
+    alias: "Path: Motion cleared"
+  - alias: "Path: Light timer finished"
+    if:
+      - condition: trigger
+        id:
+          - motion_clear_timer_finish
+      - condition: state
+        entity_id: !input input_boolean_disable_motion_sensors
+        state: "off"
+      - condition: state
+        entity_id: !input input_boolean_physical_switch_override
+        state: "off"
+      - condition: state
+        entity_id: !input timer_motion_detected_light_timeout
+        state: idle
+    then:
+      - alias: >-
+          Disable this automation to avoid re-triggering and aborting it when
+          turning on the light next
+        service: automation.turn_off
+        data:
+          stop_actions: false
+        target:
+          entity_id: "{{ automation_id }}"
+      - service: light.turn_off
+        data: {}
+        target:
+          entity_id: !input light_entity
+      - service: automation.turn_on
+        data: {}
+        target:
+          entity_id: "{{ automation_id }}"
